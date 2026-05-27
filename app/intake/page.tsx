@@ -1,59 +1,90 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAction } from "convex/react";
+import { ConversationProvider } from "@elevenlabs/react";
 import { api } from "@/convex/_generated/api";
 import { VoiceIndicator } from "@/components/voice-indicator";
+import { useVoiceIntake } from "@/hooks/use-voice-intake";
 
 type IntakeState = "idle" | "listening" | "processing";
 
-// PLACEHOLDER — used until the ElevenLabs widget is wired up so the demo flow
-// can still produce a believable transcript end-to-end.
-const PLACEHOLDER_TRANSCRIPT =
-  "patient reports sharp pain in the lower right abdomen, started about four hours ago, rates pain six out of ten, worsens with movement. no nausea or fever. currently takes lisinopril daily.";
-
 export default function IntakePage() {
+  return (
+    <ConversationProvider>
+      <IntakeExperience />
+    </ConversationProvider>
+  );
+}
+
+function IntakeExperience() {
   const router = useRouter();
   const classifyAndCreate = useAction(api.triage.classifyAndCreate);
+  const voice = useVoiceIntake();
 
-  const [state, setState] = useState<IntakeState>("idle");
-  const [transcript, setTranscript] = useState("");
-  const [language] = useState("english");
-  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const submittedRef = useRef(false);
 
-  function handleStart() {
-    // TODO: wire up — start ElevenLabs conversation; stream partial transcript
-    // into setTranscript as the patient speaks.
-    setState("listening");
+  const state: IntakeState = submitting
+    ? "processing"
+    : voice.status === "idle"
+      ? "idle"
+      : "listening";
+
+  // Auto-submit when the ElevenLabs session ends — covers both paths:
+  // the patient tapping "i'm done speaking" and the agent ending the call
+  // itself after its closing line. The ref-guard makes this one-shot;
+  // setState is deferred so react-hooks/set-state-in-effect stays happy.
+  useEffect(() => {
+    if (submittedRef.current) return;
+    if (voice.status !== "complete") return;
+    if (!voice.transcript) return;
+
+    submittedRef.current = true;
+    const transcript = voice.transcript;
+    const language = (voice.language ?? "english").toLowerCase();
+
+    void Promise.resolve().then(() => {
+      setSubmitting(true);
+      setSubmitError(null);
+      classifyAndCreate({ transcript, language })
+        .then(({ shortCode }) => router.push(`/q/${shortCode}`))
+        .catch((e) => {
+          submittedRef.current = false;
+          setSubmitError(
+            e instanceof Error ? e.message : "something went wrong",
+          );
+          setSubmitting(false);
+        });
+    });
+  }, [
+    voice.status,
+    voice.transcript,
+    voice.language,
+    classifyAndCreate,
+    router,
+  ]);
+
+  async function handleStart() {
+    setSubmitError(null);
+    await voice.start();
   }
 
   async function handleFinish() {
-    // TODO: wire up — end ElevenLabs session and pass its final transcript +
-    // detected language to classifyAndCreate (instead of the placeholder).
-    setState("processing");
-    setError(null);
-    try {
-      const { shortCode } = await classifyAndCreate({
-        transcript: transcript || PLACEHOLDER_TRANSCRIPT,
-        language,
-      });
-      router.push(`/q/${shortCode}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "something went wrong");
-      setState("listening");
-    }
+    await voice.finish();
   }
 
   function handleReset() {
-    setState("idle");
-    setTranscript("");
-    setError(null);
+    voice.reset();
+    submittedRef.current = false;
+    setSubmitting(false);
+    setSubmitError(null);
   }
 
-  // Mark setTranscript as intentionally retained for the ElevenLabs wiring step.
-  void setTranscript;
+  const error = submitError ?? voice.error;
 
   return (
     <main className="min-h-svh bg-bone flex flex-col">
@@ -79,7 +110,7 @@ export default function IntakePage() {
         {state === "idle" && <IdleView onStart={handleStart} />}
         {state === "listening" && (
           <ListeningView
-            transcript={transcript}
+            transcript={voice.transcript}
             onFinish={handleFinish}
             error={error}
           />
