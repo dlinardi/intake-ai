@@ -124,6 +124,17 @@ export function useVoiceIntake() {
         appendTurn(turn);
       }
     },
+    onAsrInitiationMetadata: (event: unknown) => {
+      // ElevenLabs types this event payload as Record<string, any>, but in
+      // practice the multilingual ASR drops the ISO-639-1 code it locked onto
+      // here as `language_code` ("es", "fr", "it", "hi", "en", ...).
+      const code = readLanguageCode(event);
+      const name = code ? languageNameFromCode(code) : undefined;
+      if (name) {
+        languageRef.current = name;
+        setLanguage(name);
+      }
+    },
     onStatusChange: (nextStatus: unknown) => {
       if (readStatus(nextStatus) === "connecting") {
         setStatus("connecting");
@@ -270,4 +281,41 @@ function asRecord(value: unknown) {
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readLanguageCode(event: unknown) {
+  const record = asRecord(event);
+  if (!record) return undefined;
+  // The asr metadata sometimes nests under `asr_initiation_metadata_event`
+  // depending on whether the SDK unwraps the envelope. Check both.
+  const direct = readString(record.language_code);
+  if (direct) return direct;
+  const nested = asRecord(record.asr_initiation_metadata_event);
+  return nested ? readString(nested.language_code) : undefined;
+}
+
+// ISO-639-1 → friendly lowercase name for the demo set. Anything we don't
+// recognize falls through as the raw code (still useful: nurse sees "de"
+// instead of "english" for German).
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "english",
+  es: "spanish",
+  fr: "french",
+  it: "italian",
+  hi: "hindi",
+  de: "german",
+  pt: "portuguese",
+  zh: "mandarin",
+  ar: "arabic",
+  ja: "japanese",
+  ko: "korean",
+  ru: "russian",
+  vi: "vietnamese",
+  pl: "polish",
+  tr: "turkish",
+};
+
+function languageNameFromCode(code: string) {
+  const base = code.toLowerCase().split(/[-_]/)[0];
+  return LANGUAGE_NAMES[base] ?? base;
 }
