@@ -15,15 +15,15 @@ type IntakeState = "idle" | "listening" | "processing";
 // to the triage classifier.
 const SCRIPT: ReadonlyArray<{ delayMs: number; line: string }> = [
   {
-    delayMs: 1200,
+    delayMs: 3500,
     line: "uh… i have cough. very bad cough. three week now. i tired all the time, nose running, i feel sick. i think maybe cold but no go away. some day better, some day very bad. i cannot sleep good.",
   },
   {
-    delayMs: 9000,
+    delayMs: 13000,
     line: "maybe seven. is hard to breathe sometime when cough a lot.",
   },
   {
-    delayMs: 7000,
+    delayMs: 12000,
     line: "yes, night is worse. when i lay down, cough more. morning also bad. hot tea help little bit.",
   },
 ];
@@ -35,7 +35,7 @@ export default function IntakePage() {
   const classifyAndCreate = useAction(api.triage.classifyAndCreate);
 
   const [state, setState] = useState<IntakeState>("idle");
-  const [transcript, setTranscript] = useState("");
+  const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -48,16 +48,14 @@ export default function IntakePage() {
 
   function handleStart() {
     setState("listening");
-    setTranscript("");
+    setLines([]);
     setError(null);
 
     let cumulative = 0;
-    let assembled = "";
     SCRIPT.forEach(({ delayMs, line }) => {
       cumulative += delayMs;
       const t = setTimeout(() => {
-        assembled = assembled ? `${assembled} ${line}` : line;
-        setTranscript(assembled);
+        setLines((prev) => [...prev, line]);
       }, cumulative);
       timersRef.current.push(t);
     });
@@ -71,10 +69,11 @@ export default function IntakePage() {
     setError(null);
 
     const fullTranscript = SCRIPT.map((s) => s.line).join(" ");
+    const spoken = lines.join(" ");
 
     try {
       const { shortCode } = await classifyAndCreate({
-        transcript: transcript || fullTranscript,
+        transcript: spoken || fullTranscript,
         language: DEMO_LANGUAGE,
       });
       router.push(`/q/${shortCode}`);
@@ -88,7 +87,7 @@ export default function IntakePage() {
     timersRef.current.forEach(clearTimeout);
     timersRef.current = [];
     setState("idle");
-    setTranscript("");
+    setLines([]);
     setError(null);
   }
 
@@ -116,7 +115,7 @@ export default function IntakePage() {
         {state === "idle" && <IdleView onStart={handleStart} />}
         {state === "listening" && (
           <ListeningView
-            transcript={transcript}
+            lines={lines}
             onFinish={handleFinish}
             error={error}
           />
@@ -148,11 +147,11 @@ function IdleView({ onStart }: { onStart: () => void }) {
 }
 
 function ListeningView({
-  transcript,
+  lines,
   onFinish,
   error,
 }: {
-  transcript: string;
+  lines: string[];
   onFinish: () => void;
   error: string | null;
 }) {
@@ -172,9 +171,17 @@ function ListeningView({
         aria-atomic="false"
         className="mt-12 w-full max-w-2xl min-h-[6.5rem]"
       >
-        {transcript ? (
+        {lines.length > 0 ? (
           <p className="font-serif text-2xl md:text-3xl text-ink leading-snug text-balance">
-            {transcript}
+            {lines.map((line, i) => (
+              <span
+                key={i}
+                className="motion-safe:[animation:transcript-in_900ms_ease-out_both]"
+              >
+                {i > 0 ? " " : ""}
+                {line}
+              </span>
+            ))}
           </p>
         ) : (
           <p className="font-serif italic text-xl md:text-2xl text-ink-mute leading-snug">
