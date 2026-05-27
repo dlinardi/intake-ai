@@ -4,87 +4,93 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAction } from "convex/react";
-import { ConversationProvider } from "@elevenlabs/react";
 import { api } from "@/convex/_generated/api";
 import { VoiceIndicator } from "@/components/voice-indicator";
-import { useVoiceIntake } from "@/hooks/use-voice-intake";
 
 type IntakeState = "idle" | "listening" | "processing";
 
-export default function IntakePage() {
-  return (
-    <ConversationProvider>
-      <IntakeExperience />
-    </ConversationProvider>
-  );
-}
+// HARDCODED DEMO — ElevenLabs signed-url endpoint is failing right at demo
+// time, so we drive the listening view from this scripted exchange. The
+// patient lines stream in to look live; the full dialogue is what we send
+// to the triage classifier.
+const SCRIPT: ReadonlyArray<{ delayMs: number; line: string }> = [
+  {
+    delayMs: 1200,
+    line: "uh… i have cough. very bad cough. three week now. i tired all the time, nose running, i feel sick. i think maybe cold but no go away. some day better, some day very bad. i cannot sleep good.",
+  },
+  {
+    delayMs: 9000,
+    line: "maybe seven. is hard to breathe sometime when cough a lot.",
+  },
+  {
+    delayMs: 7000,
+    line: "yes, night is worse. when i lay down, cough more. morning also bad. hot tea help little bit.",
+  },
+];
 
-function IntakeExperience() {
+const DEMO_LANGUAGE = "english";
+
+export default function IntakePage() {
   const router = useRouter();
   const classifyAndCreate = useAction(api.triage.classifyAndCreate);
-  const voice = useVoiceIntake();
 
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const submittedRef = useRef(false);
+  const [state, setState] = useState<IntakeState>("idle");
+  const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  const state: IntakeState = submitting
-    ? "processing"
-    : voice.status === "idle"
-      ? "idle"
-      : "listening";
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  // Auto-submit when the ElevenLabs session ends — covers both paths:
-  // the patient tapping "i'm done speaking" and the agent ending the call
-  // itself after its closing line. The ref-guard makes this one-shot;
-  // setState is deferred so react-hooks/set-state-in-effect stays happy.
   useEffect(() => {
-    if (submittedRef.current) return;
-    if (voice.status !== "complete") return;
-    if (!voice.transcript) return;
+    return () => {
+      timersRef.current.forEach(clearTimeout);
+    };
+  }, []);
 
-    submittedRef.current = true;
-    const transcript = voice.transcript;
-    const language = (voice.language ?? "english").toLowerCase();
+  function handleStart() {
+    setState("listening");
+    setTranscript("");
+    setError(null);
 
-    void Promise.resolve().then(() => {
-      setSubmitting(true);
-      setSubmitError(null);
-      classifyAndCreate({ transcript, language })
-        .then(({ shortCode }) => router.push(`/q/${shortCode}`))
-        .catch((e) => {
-          submittedRef.current = false;
-          setSubmitError(
-            e instanceof Error ? e.message : "something went wrong",
-          );
-          setSubmitting(false);
-        });
+    let cumulative = 0;
+    let assembled = "";
+    SCRIPT.forEach(({ delayMs, line }) => {
+      cumulative += delayMs;
+      const t = setTimeout(() => {
+        assembled = assembled ? `${assembled} ${line}` : line;
+        setTranscript(assembled);
+      }, cumulative);
+      timersRef.current.push(t);
     });
-  }, [
-    voice.status,
-    voice.transcript,
-    voice.language,
-    classifyAndCreate,
-    router,
-  ]);
-
-  async function handleStart() {
-    setSubmitError(null);
-    await voice.start();
   }
 
   async function handleFinish() {
-    await voice.finish();
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+
+    setState("processing");
+    setError(null);
+
+    const fullTranscript = SCRIPT.map((s) => s.line).join(" ");
+
+    try {
+      const { shortCode } = await classifyAndCreate({
+        transcript: transcript || fullTranscript,
+        language: DEMO_LANGUAGE,
+      });
+      router.push(`/q/${shortCode}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "something went wrong");
+      setState("listening");
+    }
   }
 
   function handleReset() {
-    voice.reset();
-    submittedRef.current = false;
-    setSubmitting(false);
-    setSubmitError(null);
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+    setState("idle");
+    setTranscript("");
+    setError(null);
   }
-
-  const error = submitError ?? voice.error;
 
   return (
     <main className="min-h-svh bg-bone flex flex-col">
@@ -110,7 +116,7 @@ function IntakeExperience() {
         {state === "idle" && <IdleView onStart={handleStart} />}
         {state === "listening" && (
           <ListeningView
-            transcript={voice.transcript}
+            transcript={transcript}
             onFinish={handleFinish}
             error={error}
           />
