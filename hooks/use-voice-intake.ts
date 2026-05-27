@@ -213,21 +213,18 @@ function getFirstLine(value: string) {
 
 function readDialogueTurn(message: unknown): VoiceDialogueTurn | null {
   const record = asRecord(message);
+  if (!record) return null;
 
-  if (!record) {
-    return null;
+  // @elevenlabs/client delivers MessagePayload: { message, source: "user" | "ai", role }
+  const text = readString(record.message);
+  if (!text) return null;
+
+  const source = readString(record.source) ?? readString(record.role);
+  if (source === "user" || source === "patient") {
+    return { role: "patient", text };
   }
-
-  if (record.type === "user_transcript") {
-    const event = asRecord(record.user_transcription_event);
-    const text = readString(event?.user_transcript);
-    return text ? { role: "patient", text } : null;
-  }
-
-  if (record.type === "agent_response") {
-    const event = asRecord(record.agent_response_event);
-    const text = readString(event?.agent_response);
-    return text ? { role: "agent", text } : null;
+  if (source === "ai" || source === "agent" || source === "assistant") {
+    return { role: "agent", text };
   }
 
   return null;
