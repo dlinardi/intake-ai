@@ -1,32 +1,27 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { VoiceIndicator } from "@/components/voice-indicator";
-import { TriageCard } from "@/components/triage-card";
-import type { Triage } from "@/lib/triage-schema";
 
-type IntakeState = "idle" | "listening" | "complete";
+type IntakeState = "idle" | "listening" | "processing";
 
-// PLACEHOLDER — replace once /api/triage is wired up. Lets the design be
-// reviewed end-to-end without the live conversation running.
-const DEMO_TRIAGE: Triage = {
-  tier: "standard",
-  summary: [
-    "sharp pain in lower right abdomen for the past four hours",
-    "pain rated 6 out of 10, worsens with movement",
-    "no nausea, no fever reported",
-    "currently takes lisinopril for blood pressure",
-  ],
-  language: "english",
-  suggested_next_step: "register at the front desk for triage nurse evaluation",
-  estimated_wait: "~45 min",
-};
+// PLACEHOLDER — used until the ElevenLabs widget is wired up so the demo flow
+// can still produce a believable transcript end-to-end.
+const PLACEHOLDER_TRANSCRIPT =
+  "patient reports sharp pain in the lower right abdomen, started about four hours ago, rates pain six out of ten, worsens with movement. no nausea or fever. currently takes lisinopril daily.";
 
 export default function IntakePage() {
+  const router = useRouter();
+  const classifyAndCreate = useAction(api.triage.classifyAndCreate);
+
   const [state, setState] = useState<IntakeState>("idle");
   const [transcript, setTranscript] = useState("");
-  const [result, setResult] = useState<Triage | null>(null);
+  const [language] = useState("english");
+  const [error, setError] = useState<string | null>(null);
 
   function handleStart() {
     // TODO: wire up — start ElevenLabs conversation; stream partial transcript
@@ -34,20 +29,30 @@ export default function IntakePage() {
     setState("listening");
   }
 
-  function handleFinish() {
-    // TODO: wire up — end ElevenLabs session, POST {transcript, language} to
-    // /api/triage, then setResult with the parsed Triage object.
-    setResult(DEMO_TRIAGE);
-    setState("complete");
+  async function handleFinish() {
+    // TODO: wire up — end ElevenLabs session and pass its final transcript +
+    // detected language to classifyAndCreate (instead of the placeholder).
+    setState("processing");
+    setError(null);
+    try {
+      const { shortCode } = await classifyAndCreate({
+        transcript: transcript || PLACEHOLDER_TRANSCRIPT,
+        language,
+      });
+      router.push(`/q/${shortCode}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "something went wrong");
+      setState("listening");
+    }
   }
 
   function handleReset() {
     setState("idle");
     setTranscript("");
-    setResult(null);
+    setError(null);
   }
 
-  // Mark setTranscript as intentionally retained for the wiring step.
+  // Mark setTranscript as intentionally retained for the ElevenLabs wiring step.
   void setTranscript;
 
   return (
@@ -59,7 +64,7 @@ export default function IntakePage() {
         >
           intake
         </Link>
-        {state !== "idle" && (
+        {state !== "idle" && state !== "processing" && (
           <button
             type="button"
             onClick={handleReset}
@@ -73,11 +78,13 @@ export default function IntakePage() {
       <div className="flex-1 flex flex-col items-center justify-center px-6 sm:px-10 py-12">
         {state === "idle" && <IdleView onStart={handleStart} />}
         {state === "listening" && (
-          <ListeningView transcript={transcript} onFinish={handleFinish} />
+          <ListeningView
+            transcript={transcript}
+            onFinish={handleFinish}
+            error={error}
+          />
         )}
-        {state === "complete" && result && (
-          <CompleteView data={result} onReset={handleReset} />
-        )}
+        {state === "processing" && <ProcessingView />}
       </div>
     </main>
   );
@@ -106,9 +113,11 @@ function IdleView({ onStart }: { onStart: () => void }) {
 function ListeningView({
   transcript,
   onFinish,
+  error,
 }: {
   transcript: string;
   onFinish: () => void;
+  error: string | null;
 }) {
   return (
     <div className="flex flex-col items-center text-center w-full">
@@ -136,6 +145,11 @@ function ListeningView({
           </p>
         )}
       </div>
+      {error && (
+        <p role="alert" className="mt-6 text-sm text-clay">
+          {error}
+        </p>
+      )}
       <button
         type="button"
         onClick={onFinish}
@@ -147,27 +161,23 @@ function ListeningView({
   );
 }
 
-function CompleteView({
-  data,
-  onReset,
-}: {
-  data: Triage;
-  onReset: () => void;
-}) {
+function ProcessingView() {
   return (
-    <div className="flex flex-col items-center w-full">
-      <p className="text-[11px] uppercase tracking-[0.24em] text-ink-mute mb-8">
-        please show this to the front desk
+    <div
+      className="flex flex-col items-center text-center"
+      role="status"
+      aria-live="polite"
+    >
+      <p className="text-[11px] uppercase tracking-[0.24em] text-ink-mute mb-10">
+        preparing your summary
       </p>
-      <h1 className="sr-only">triage summary</h1>
-      <TriageCard data={data} />
-      <button
-        type="button"
-        onClick={onReset}
-        className="mt-10 text-sm text-ink-soft underline underline-offset-[6px] decoration-line hover:text-ink hover:decoration-clay transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-clay/40 rounded-sm px-1"
-      >
-        new intake
-      </button>
+      <h1 className="font-serif text-3xl sm:text-4xl text-ink leading-tight max-w-md text-balance">
+        one moment <span className="italic text-clay">…</span>
+      </h1>
+      <p className="mt-6 max-w-md text-ink-soft text-lg leading-relaxed">
+        we&rsquo;re classifying your symptoms and finding your place in line.
+      </p>
+      <div className="mt-12 h-12 w-12 rounded-full border-2 border-line border-t-clay motion-safe:animate-spin" />
     </div>
   );
 }
