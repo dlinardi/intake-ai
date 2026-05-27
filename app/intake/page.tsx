@@ -4,92 +4,87 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAction } from "convex/react";
+import { ConversationProvider } from "@elevenlabs/react";
 import { api } from "@/convex/_generated/api";
 import { VoiceIndicator } from "@/components/voice-indicator";
+import { useVoiceIntake } from "@/hooks/use-voice-intake";
 
 type IntakeState = "idle" | "listening" | "processing";
 
-// HARDCODED DEMO — ElevenLabs signed-url endpoint is failing right at demo
-// time, so we drive the listening view from this scripted exchange. The
-// patient lines stream in to look live; the full dialogue is what we send
-// to the triage classifier.
-const SCRIPT: ReadonlyArray<{ delayMs: number; line: string }> = [
-  {
-    delayMs: 3500,
-    line: "uh… i have cough. very bad cough. three week now. i tired all the time, nose running, i feel sick. i think maybe cold but no go away. some day better, some day very bad. i cannot sleep good.",
-  },
-  {
-    delayMs: 13000,
-    line: "maybe seven. is hard to breathe sometime when cough a lot.",
-  },
-  {
-    delayMs: 12000,
-    line: "yes, night is worse. when i lay down, cough more. morning also bad. hot tea help little bit.",
-  },
-];
-
-const DEMO_LANGUAGE = "english";
-
 export default function IntakePage() {
+  return (
+    <ConversationProvider>
+      <IntakeExperience />
+    </ConversationProvider>
+  );
+}
+
+function IntakeExperience() {
   const router = useRouter();
   const classifyAndCreate = useAction(api.triage.classifyAndCreate);
+  const voice = useVoiceIntake();
 
-  const [state, setState] = useState<IntakeState>("idle");
-  const [lines, setLines] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const submittedRef = useRef(false);
 
-  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const state: IntakeState = submitting
+    ? "processing"
+    : voice.status === "idle"
+      ? "idle"
+      : "listening";
 
+  // Auto-submit when the ElevenLabs session ends — covers both paths:
+  // the patient tapping "i'm done speaking" and the agent ending the call
+  // itself after its closing line. The ref-guard makes this one-shot;
+  // setState is deferred so react-hooks/set-state-in-effect stays happy.
   useEffect(() => {
-    return () => {
-      timersRef.current.forEach(clearTimeout);
-    };
-  }, []);
+    if (submittedRef.current) return;
+    if (voice.status !== "complete") return;
+    if (!voice.transcript) return;
 
-  function handleStart() {
-    setState("listening");
-    setLines([]);
-    setError(null);
+    submittedRef.current = true;
+    const transcript = voice.transcript;
+    const language = (voice.language ?? "english").toLowerCase();
 
-    let cumulative = 0;
-    SCRIPT.forEach(({ delayMs, line }) => {
-      cumulative += delayMs;
-      const t = setTimeout(() => {
-        setLines((prev) => [...prev, line]);
-      }, cumulative);
-      timersRef.current.push(t);
+    void Promise.resolve().then(() => {
+      setSubmitting(true);
+      setSubmitError(null);
+      classifyAndCreate({ transcript, language })
+        .then(({ shortCode }) => router.push(`/q/${shortCode}`))
+        .catch((e) => {
+          submittedRef.current = false;
+          setSubmitError(
+            e instanceof Error ? e.message : "something went wrong",
+          );
+          setSubmitting(false);
+        });
     });
+  }, [
+    voice.status,
+    voice.transcript,
+    voice.language,
+    classifyAndCreate,
+    router,
+  ]);
+
+  async function handleStart() {
+    setSubmitError(null);
+    await voice.start();
   }
 
   async function handleFinish() {
-    timersRef.current.forEach(clearTimeout);
-    timersRef.current = [];
-
-    setState("processing");
-    setError(null);
-
-    const fullTranscript = SCRIPT.map((s) => s.line).join(" ");
-    const spoken = lines.join(" ");
-
-    try {
-      const { shortCode } = await classifyAndCreate({
-        transcript: spoken || fullTranscript,
-        language: DEMO_LANGUAGE,
-      });
-      router.push(`/q/${shortCode}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "something went wrong");
-      setState("listening");
-    }
+    await voice.finish();
   }
 
   function handleReset() {
-    timersRef.current.forEach(clearTimeout);
-    timersRef.current = [];
-    setState("idle");
-    setLines([]);
-    setError(null);
+    voice.reset();
+    submittedRef.current = false;
+    setSubmitting(false);
+    setSubmitError(null);
   }
+
+  const error = submitError ?? voice.error;
 
   return (
     <main className="min-h-svh bg-bone flex flex-col">
@@ -115,7 +110,7 @@ export default function IntakePage() {
         {state === "idle" && <IdleView onStart={handleStart} />}
         {state === "listening" && (
           <ListeningView
-            lines={lines}
+            transcript={voice.transcript}
             onFinish={handleFinish}
             error={error}
           />
@@ -147,11 +142,11 @@ function IdleView({ onStart }: { onStart: () => void }) {
 }
 
 function ListeningView({
-  lines,
+  transcript,
   onFinish,
   error,
 }: {
-  lines: string[];
+  transcript: string;
   onFinish: () => void;
   error: string | null;
 }) {
@@ -171,17 +166,9 @@ function ListeningView({
         aria-atomic="false"
         className="mt-12 w-full max-w-2xl min-h-[6.5rem]"
       >
-        {lines.length > 0 ? (
+        {transcript ? (
           <p className="font-serif text-2xl md:text-3xl text-ink leading-snug text-balance">
-            {lines.map((line, i) => (
-              <span
-                key={i}
-                className="motion-safe:[animation:transcript-in_900ms_ease-out_both]"
-              >
-                {i > 0 ? " " : ""}
-                {line}
-              </span>
-            ))}
+            {transcript}
           </p>
         ) : (
           <p className="font-serif italic text-xl md:text-2xl text-ink-mute leading-snug">
